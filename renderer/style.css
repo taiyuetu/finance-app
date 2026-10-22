@@ -326,6 +326,9 @@ tr:hover td { background: #f8fafc; }
 
 .modal {
   width: 460px;
+  max-height: calc(100vh - 48px); /* 笔记本小屏：弹窗不超出视口 */
+  overflow-y: auto;                /* 内容过长时弹窗内部滚动 */
+  overscroll-behavior: contain;
   background: #fff;
   border-radius: 18px;
   padding: 22px 24px;
@@ -381,7 +384,13 @@ tr:hover td { background: #f8fafc; }
 .chip.active.income-chip { background: #16a34a; border-color: #16a34a; }
 
 .form-error { color: #dc2626; font-size: 12.5px; margin-top: 12px; min-height: 17px; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.modal-actions {
+  display: flex; justify-content: flex-end; gap: 10px;
+  margin-top: 18px;
+  position: sticky; bottom: 0;     /* 内容过长时按钮吸底，始终可见可点 */
+  background: #fff;
+  padding: 8px 0 2px;
+}
 .modal-actions .left { margin-right: auto; }
 
 /* ---------- Toast ---------- */

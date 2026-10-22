@@ -2488,14 +2488,19 @@ function bindEvents() {
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && (state.form || state.debtForm || state.catForm)) { closeForm(); return; }
-    if (e.key === 'Enter' && state.catForm && e.target.id === 'cat-name') { e.preventDefault(); saveCatForm(); return; }
-    if (e.key === 'Enter' && state.debtForm && ['d-platform', 'd-total', 'd-periods', 'd-per', 'd-minrate', 'd-rate', 'd-note'].includes(e.target.id)) {
+    // Enter = 提交当前打开的弹窗（记账 / 新增负债 / 分类），无需逐个字段绑定：
+    // - isComposing：中文输入法选词的回车不触发提交
+    // - BUTTON：焦点在按钮上时交给原生点击，避免与「保存」按钮重复触发
+    // - TEXTAREA：保留换行
+    if (e.key === 'Enter' && !e.isComposing && (state.form || state.debtForm || state.catForm)) {
+      const tag = e.target && e.target.tagName;
+      if (tag === 'BUTTON' || tag === 'TEXTAREA') return;
       e.preventDefault();
-      saveDebtForm();
+      if (state.debtForm) saveDebtForm();
+      else if (state.catForm) saveCatForm();
+      else saveForm();
       return;
     }
-    if (e.key === 'Enter' && state.form && e.target.id === 'f-amount') { e.preventDefault(); saveForm(); return; }
-    if (e.key === 'Enter' && state.form && (e.target.id === 'f-note' || e.target.id === 'f-date')) { e.preventDefault(); saveForm(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n' && !state.form) {
       e.preventDefault();
       openForm(null);
