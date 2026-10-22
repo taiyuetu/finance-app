@@ -217,22 +217,11 @@ const sumOfType = (type) => state.data.transactions.reduce((s, t) => s + (t.type
 const debtList = () => (Array.isArray(state.data.debts) ? state.data.debts : []);
 
 /**
- * 等额本息每期应还金额（每月还款本金+利息总额固定）：由「年利率 + 期数」自动算出
- * rate：月利率（annualRate/1200）；利率为 0 时即总金额 ÷ 期数
- */
-function equalPerPeriod(total, rate, n) {
-  if (!(total > 0) || n <= 0) return 0;
-  if (!(rate > 0)) return round2(total / n);
-  const f = Math.pow(1 + rate, n);
-  const per = (total * rate * f) / (f - 1);
-  return isFinite(per) && per > 0 ? round2(per) : round2(total / n);
-}
-
-/**
  * 生成某笔负债的还款计划表，按还款方式用年利率自动计算每期应还金额：
  * - principal（等额本金）：每期归还本金固定不变，利息按剩余本金计逐期递减，每期应还逐月下降，末期轧差
- * - equal（等额本息）：每期还款（本金+利息）总额固定，利息随剩余本金递减，末期轧差
- * - daily（按日计息·借呗口径）：每期本金固定，利息 = 剩余本金 × 日利率 × 当期实际天数（首期为放款日→首期还款日）
+ * - equal（等额本息·市场口径）：按日计息，总利息 = Σ(计划余额 × 日利率 × 当期实际天数)，
+ *   每期定额 =（本金 + 总利息）÷ 期数，每期还款固定，与借呗等平台账单口径一致（非银行年金公式）
+ * - daily（按日计息·递减口径）：每期本金固定，利息 = 剩余本金 × 日利率 × 当期实际天数（首期为放款日→首期还款日）
  * - minimum（每期最低还款）：按「最低还款比例」逐期冲抵本金，当期按剩余本金计息
  * - interest（先息后本还款）：每期只还当期利息，末期一次性归还全部本金
  * - private（民间借贷）：按约定还款日一次性还本付息（年利率为 0 则只还本金）
@@ -332,18 +321,35 @@ function debtSchedule(d) {
         }
       }
     } else {
-      // 等额本息：每期应还固定，先还息后还本，末期轧差
-      const per = equalPerPeriod(total, rate, n);
+      // 等额本息（市场口径·按日计息定额）：与借呗等消费金融平台账单一致，而非银行年金公式
+      // ① 总利息 = Σ(计划余额 × 日利率 × 当期实际天数)，计划余额按本金均分逐期递减；
+      //    日利率 = 年利率 ÷ 365，首期天数 = 放款日 → 首期还款日，之后为相邻两期还款日实际间隔
+      // ② 每期定额 = (本金 + 总利息) ÷ 期数，每期还款固定，本金 = 定额 − 当期利息，末期轧差
+      const daily = Math.max(0, Number(d.annualRate) || 0) / 100 / 365;
+      const perPri = round2(total / n);
+      const dates = [];
+      const ints = [];
+      let plan = total;
+      let prevDate = d.borrowDate || today;
+      for (let i = 1; i <= n; i++) {
+        const date = addMonths(d.firstDue, i - 1);
+        const days = Math.max(0, daysDiff(prevDate, date));
+        prevDate = date;
+        dates.push(date);
+        ints.push(daily > 0 ? round2(plan * daily * days) : 0);
+        plan = round2(plan - perPri);
+      }
+      const per = round2((total + ints.reduce((s, x) => s + x, 0)) / n);
       let remain = total;
       for (let i = 1; i <= n; i++) {
-        const interest = rate > 0 ? round2(remain * rate) : 0;
+        const interest = ints[i - 1];
         let principal = round2(per - interest);
         let amount = per;
         if (i === n || principal >= remain) { principal = remain; amount = round2(principal + interest); } // 末期轧差
-        push(i, addMonths(d.firstDue, i - 1), amount, interest, principal);
+        push(i, dates[i - 1], amount, interest, principal);
         remain = round2(remain - principal);
         if (remain <= 0 && i < n) { // 兜底：本金提前还完则补齐剩余期数为 0
-          for (let j = i + 1; j <= n; j++) push(j, addMonths(d.firstDue, j - 1), 0, 0, 0);
+          for (let j = i + 1; j <= n; j++) push(j, dates[j - 1], 0, 0, 0);
           break;
         }
       }
@@ -1135,7 +1141,7 @@ function renderDebts() {
             ? annual > 0 ? `年化 ${annual}% · 按日计息` : '免息 · 每期本金均分'
             : d.kind === 'principal'
               ? annual > 0 ? `年利率 ${annual}% · 逐期递减` : '免息 · 每期本金均分'
-              : annual > 0 ? `年利率 ${annual}%` : '免息 · 自动均分';
+              : annual > 0 ? `年化 ${annual}% · 按日定额` : '免息 · 每期固定';
     const perCell = d.kind === 'minimum'
       ? `<b>${i.next ? money(i.next.amount) : '—'}</b><div class="cell-sub">${perSub}</div>`
       : `<b>${i.rows[0] ? money(i.rows[0].amount) : money(i.per)}</b><div class="cell-sub">${perSub}</div>`;
@@ -1294,7 +1300,7 @@ function renderDebtForm() {
           <select id="d-kind">${methodOptions}</select>
         </div>
         <div class="field">
-          <label>${isPrivate ? '约定年利率（%）· 0 表示无利息' : isDaily ? '年化利率（%）· 日利率 = 年利率 ÷ 365' : '年利率（%）'}</label>
+          <label>${isPrivate ? '约定年利率（%）· 0 表示无利息' : (isDaily || f.kind === 'equal') ? '年化利率（%）· 日利率 = 年利率 ÷ 365' : '年利率（%）'}</label>
           <input id="d-rate" type="number" min="0" step="0.01" placeholder="${isPrivate ? '如 12 表示年化 12%，到期还本付息' : '如 12 表示年化 12%'}" value="${f.annualRate === '' || f.annualRate == null ? 0 : esc(f.annualRate)}">
         </div>
       </div>
@@ -1401,7 +1407,8 @@ function updateDebtPreview() {
     const dailyPct = String(Number((rate / 365).toFixed(4)));
     box.innerHTML = `首期（${firstDays} 天）应还 <b>${money(per)}</b>（本金均分 <b>${money(perPri)}</b> + 剩余本金 × 日利率 ${dailyPct}% × 实际天数）· 年化 ${rate}% · 共 <b>${rows.length}</b> 期 · 末期 <b>${money(last ? last.amount : 0)}</b> · 利息合计 <b>${money(interestSum)}</b> · 还清日 <b>${rows.length ? dateLabel(last.date) : '—'}</b>`;
   } else {
-    box.innerHTML = `每期应还 <b>${money(per)}</b>（年利率 ${rate}% · 共 <b>${rows.length}</b> 期）· 末期 <b>${money(last ? last.amount : 0)}</b> · 利息合计 <b>${money(interestSum)}</b> · 还清日 <b>${rows.length ? dateLabel(last.date) : '—'}</b>`;
+    const dailyPct = String(Number((rate / 365).toFixed(4)));
+    box.innerHTML = `每期固定应还 <b>${money(per)}</b>（按日计息：日利率 ${dailyPct}% × 当期实际天数，利息随剩余本金递减，本息定额均摊）· 年化 ${rate}% · 共 <b>${rows.length}</b> 期 · 末期 <b>${money(last ? last.amount : 0)}</b> · 利息合计 <b>${money(interestSum)}</b> · 还清日 <b>${rows.length ? dateLabel(last.date) : '—'}</b>`;
   }
 }
 

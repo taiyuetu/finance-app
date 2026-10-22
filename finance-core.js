@@ -228,7 +228,8 @@ function equalPerPeriod(total, rate, n) {
 /**
  * 生成某笔负债的还款计划表：
  * - principal（等额本金）：每期归还本金固定不变，利息按剩余本金计逐期递减，末期轧差
- * - equal（等额本息）：每期还款（本金+利息）总额固定，利息随剩余本金递减，末期轧差
+ * - equal（等额本息·市场口径）：按日计息，总利息 = Σ(计划余额 × 日利率 × 当期实际天数)，
+ *   每期定额 =（本金 + 总利息）÷ 期数，每期还款固定（与借呗等平台账单一致，非银行年金公式）
  * - daily（按日计息·借呗口径）：每期本金固定，利息 = 剩余本金 × 日利率 × 当期实际天数
  * - minimum（每期最低还款）：按最低还款比例逐期冲抵本金
  * - interest（先息后本还款）：每期只还利息，末期还本
@@ -325,17 +326,32 @@ function debtSchedule(d) {
         }
       }
     } else {
-      const per = equalPerPeriod(total, rate, n);
+      // 等额本息（市场口径·按日计息定额）：总息 = Σ(计划余额×日利率×实际天数)，定额 = 本息合计 ÷ 期数
+      const daily = Math.max(0, Number(d.annualRate) || 0) / 100 / 365;
+      const perPri = round2(total / n);
+      const dates = [];
+      const ints = [];
+      let plan = total;
+      let prevDate = d.borrowDate || today;
+      for (let i = 1; i <= n; i++) {
+        const date = addMonths(d.firstDue, i - 1);
+        const days = Math.max(0, daysDiff(prevDate, date));
+        prevDate = date;
+        dates.push(date);
+        ints.push(daily > 0 ? round2(plan * daily * days) : 0);
+        plan = round2(plan - perPri);
+      }
+      const per = round2((total + ints.reduce((s, x) => s + x, 0)) / n);
       let remain = total;
       for (let i = 1; i <= n; i++) {
-        const interest = rate > 0 ? round2(remain * rate) : 0;
+        const interest = ints[i - 1];
         let principal = round2(per - interest);
         let amount = per;
         if (i === n || principal >= remain) { principal = remain; amount = round2(principal + interest); }
-        push(i, addMonths(d.firstDue, i - 1), amount, interest, principal);
+        push(i, dates[i - 1], amount, interest, principal);
         remain = round2(remain - principal);
         if (remain <= 0 && i < n) {
-          for (let j = i + 1; j <= n; j++) push(j, addMonths(d.firstDue, j - 1), 0, 0, 0);
+          for (let j = i + 1; j <= n; j++) push(j, dates[j - 1], 0, 0, 0);
           break;
         }
       }

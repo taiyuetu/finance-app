@@ -30,7 +30,7 @@ const AMOUNT = z.number().positive().describe('金额（元，正数）');
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式 YYYY-MM-DD').describe('日期 YYYY-MM-DD');
 const TX_TYPE = z.enum(['expense', 'income']).describe('类型：expense 支出 / income 收入');
 const KIND = z.enum(['principal', 'equal', 'daily', 'minimum', 'interest', 'private'])
-  .describe('还款方式：principal 等额本金（每期本金固定、利息随剩余本金递减）/ equal 等额本息（每期本金+利息总额固定）/ daily 按日计息（借呗口径：本金固定 + 剩余本金×日利率×实际天数）/ minimum 每期最低还款 / interest 先息后本 / private 民间借贷');
+  .describe('还款方式：principal 等额本金（每期本金固定、利息随剩余本金递减）/ equal 等额本息（按日计息定额：总息按计划余额×日利率×天数累计，每期还款固定）/ daily 按日计息（递减式：本金固定 + 剩余本金×日利率×实际天数）/ minimum 每期最低还款 / interest 先息后本 / private 民间借贷');
 
 const ok = (data) => ({ content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
 const fail = (msg) => ({ content: [{ type: 'text', text: String(msg) }], isError: true });
