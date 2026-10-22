@@ -1,0 +1,57 @@
+{
+  "name": "finance-app",
+  "productName": "个人财务管家",
+  "version": "1.0.0",
+  "description": "个人财务管理桌面应用（Electron）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "ELECTRON_SMOKE_TEST=1 electron .",
+    "mcp": "node mcp-server.js",
+    "mcp:http": "node mcp-server.js --http 3721",
+    "test:mcp": "node test-mcp.js",
+    "pack": "electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.hdmso.finance",
+    "productName": "个人财务管家",
+    "asar": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "mcp-server.js",
+      "finance-core.js",
+      "package.json"
+    ],
+    "electronDist": "node_modules/electron/dist",
+    "disableAsarIntegrity": true,
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "个人财务管家",
+      "language": "2052",
+      "artifactName": "${productName} Setup ${version}.exe"
+    }
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.7"
+  }
+}

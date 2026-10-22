@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'">
+  <title>个人财务管家</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-icon">¥</div>
+        <div class="brand-text">
+          <div class="brand-name">个人财务管家</div>
+          <div class="brand-sub">Personal Finance</div>
+        </div>
+      </div>
+      <nav class="nav">
+        <button class="nav-item active" data-action="nav" data-view="dashboard"><span class="nav-ico">▦</span>总览</button>
+        <button class="nav-item" data-action="nav" data-view="transactions"><span class="nav-ico">≡</span>交易记录</button>
+        <button class="nav-item" data-action="nav" data-view="import"><span class="nav-ico">📥</span>导入账单</button>
+        <button class="nav-item" data-action="nav" data-view="budget"><span class="nav-ico">◎</span>预算</button>
+        <button class="nav-item" data-action="nav" data-view="debts"><span class="nav-ico">💳</span>负债</button>
+        <button class="nav-item" data-action="nav" data-view="settings"><span class="nav-ico">⚙</span>设置</button>
+      </nav>
+      <div class="sidebar-footer">数据本地存储 · 安全私密</div>
+    </aside>
+
+    <main class="main">
+      <section id="view-dashboard" class="view active"></section>
+      <section id="view-transactions" class="view"></section>
+      <section id="view-import" class="view"></section>
+      <section id="view-budget" class="view"></section>
+      <section id="view-debts" class="view"></section>
+      <section id="view-settings" class="view"></section>
+    </main>
+  </div>
+
+  <div id="modal-root" class="modal-root hidden"></div>
+  <div id="toast"></div>
+
+  <script src="charts.js"></script>
+  <script src="importer.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
