@@ -10,12 +10,14 @@ const CATEGORIES = {
 
 /** 负债还款方式（新增负债时下拉选择） */
 const REPAY_METHODS = {
-  equal: '每月等额还款',
+  principal: '等额本金',
+  equal: '等额本息',
+  daily: '按日计息',
   minimum: '每期最低还款',
   interest: '先息后本还款',
   private: '民间借贷'
 };
-/** 兼容旧数据：installment → equal */
+/** 兼容旧数据：installment → equal（旧「每月等额还款」即等额本息） */
 const LEGACY_KIND = { installment: 'equal', minimum: 'minimum', interest: 'interest' };
 
 const PALETTE = ['#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4', '#a855f7', '#ec4899', '#84cc16', '#f97316', '#64748b'];
@@ -215,7 +217,7 @@ const sumOfType = (type) => state.data.transactions.reduce((s, t) => s + (t.type
 const debtList = () => (Array.isArray(state.data.debts) ? state.data.debts : []);
 
 /**
- * 每月等额还款（等额本息）每期应还金额：由「年利率 + 期数」自动算出
+ * 等额本息每期应还金额（每月还款本金+利息总额固定）：由「年利率 + 期数」自动算出
  * rate：月利率（annualRate/1200）；利率为 0 时即总金额 ÷ 期数
  */
 function equalPerPeriod(total, rate, n) {
@@ -228,7 +230,9 @@ function equalPerPeriod(total, rate, n) {
 
 /**
  * 生成某笔负债的还款计划表，按还款方式用年利率自动计算每期应还金额：
- * - equal（每月等额还款）：等额本息，每期金额相同，利息随剩余本金递减，末期轧差
+ * - principal（等额本金）：每期归还本金固定不变，利息按剩余本金计逐期递减，每期应还逐月下降，末期轧差
+ * - equal（等额本息）：每期还款（本金+利息）总额固定，利息随剩余本金递减，末期轧差
+ * - daily（按日计息·借呗口径）：每期本金固定，利息 = 剩余本金 × 日利率 × 当期实际天数（首期为放款日→首期还款日）
  * - minimum（每期最低还款）：按「最低还款比例」逐期冲抵本金，当期按剩余本金计息
  * - interest（先息后本还款）：每期只还当期利息，末期一次性归还全部本金
  * - private（民间借贷）：按约定还款日一次性还本付息（年利率为 0 则只还本金）
@@ -293,8 +297,42 @@ function debtSchedule(d) {
         const principal = i === n ? total : 0;
         push(i, addMonths(d.firstDue, i - 1), principal + interest, interest, principal);
       }
+    } else if (d.kind === 'principal') {
+      // 等额本金：每期归还本金固定，利息按剩余本金计，每期应还逐月下降，末期轧差
+      const perPri = round2(total / n);
+      let remain = total;
+      for (let i = 1; i <= n; i++) {
+        const interest = rate > 0 ? round2(remain * rate) : 0;
+        const principal = i === n ? remain : Math.min(perPri, remain);
+        push(i, addMonths(d.firstDue, i - 1), round2(principal + interest), interest, principal);
+        remain = round2(remain - principal);
+        if (remain <= 0 && i < n) { // 兜底：本金提前还完则补齐剩余期数为 0
+          for (let j = i + 1; j <= n; j++) push(j, addMonths(d.firstDue, j - 1), 0, 0, 0);
+          break;
+        }
+      }
+    } else if (d.kind === 'daily') {
+      // 按日计息（借呗口径）：每期本金固定，利息 = 剩余本金 × 日利率 × 当期实际天数，末期轧差
+      // 日利率 = 年利率 ÷ 100 ÷ 365；首期天数 = 放款日 → 首期还款日，之后为相邻两期还款日的实际间隔
+      const daily = Math.max(0, Number(d.annualRate) || 0) / 100 / 365;
+      const perPri = round2(total / n);
+      let remain = total;
+      let prevDate = d.borrowDate || today;
+      for (let i = 1; i <= n; i++) {
+        const date = addMonths(d.firstDue, i - 1);
+        const days = Math.max(0, daysDiff(prevDate, date));
+        prevDate = date;
+        const interest = daily > 0 ? round2(remain * daily * days) : 0;
+        const principal = i === n ? remain : Math.min(perPri, remain);
+        push(i, date, round2(principal + interest), interest, principal);
+        remain = round2(remain - principal);
+        if (remain <= 0 && i < n) { // 兜底：本金提前还完则补齐剩余期数为 0
+          for (let j = i + 1; j <= n; j++) push(j, addMonths(d.firstDue, j - 1), 0, 0, 0);
+          break;
+        }
+      }
     } else {
-      // 每月等额：每期应还固定，先还息后还本，末期轧差
+      // 等额本息：每期应还固定，先还息后还本，末期轧差
       const per = equalPerPeriod(total, rate, n);
       let remain = total;
       for (let i = 1; i <= n; i++) {
@@ -1093,7 +1131,11 @@ function renderDebts() {
         ? `年利率 ${annual}% · 每期利息`
         : d.kind === 'private'
           ? annual > 0 ? `年利率 ${annual}% · 到期还本付息` : '无约定利息 · 到期还本'
-          : annual > 0 ? `年利率 ${annual}%` : '免息 · 自动均分';
+          : d.kind === 'daily'
+            ? annual > 0 ? `年化 ${annual}% · 按日计息` : '免息 · 每期本金均分'
+            : d.kind === 'principal'
+              ? annual > 0 ? `年利率 ${annual}% · 逐期递减` : '免息 · 每期本金均分'
+              : annual > 0 ? `年利率 ${annual}%` : '免息 · 自动均分';
     const perCell = d.kind === 'minimum'
       ? `<b>${i.next ? money(i.next.amount) : '—'}</b><div class="cell-sub">${perSub}</div>`
       : `<b>${i.rows[0] ? money(i.rows[0].amount) : money(i.per)}</b><div class="cell-sub">${perSub}</div>`;
@@ -1181,7 +1223,7 @@ function renderDebts() {
           </tfoot>
         </table>
       </div>
-      <div class="hint-line">「全部应还总金额」= 各平台欠款金额之和；「下期应还」= 该平台下一笔待还金额与日期；「已还金额」= 实际已归还的现金合计；「剩余应还」= 尚未归还的本金；「每期应还」按还款方式（每月等额 / 每期最低 / 先息后本）与年利率自动计算。</div>
+      <div class="hint-line">「全部应还总金额」= 各平台欠款金额之和；「下期应还」= 该平台下一笔待还金额与日期；「已还金额」= 实际已归还的现金合计；「剩余应还」= 尚未归还的本金；「每期应还」按还款方式（等额本金 / 等额本息 / 按日计息 / 每期最低 / 先息后本）与年利率自动计算。</div>
     </div>`;
 }
 
@@ -1220,6 +1262,7 @@ function renderDebtForm() {
   if (!f) return;
   const isMin = f.kind === 'minimum';
   const isPrivate = f.kind === 'private';
+  const isDaily = f.kind === 'daily';
   const methodOptions = Object.entries(REPAY_METHODS).map(([k, v]) =>
     `<option value="${k}"${f.kind === k ? ' selected' : ''}>${v}</option>`).join('');
   $('#modal-root').innerHTML = `
@@ -1251,7 +1294,7 @@ function renderDebtForm() {
           <select id="d-kind">${methodOptions}</select>
         </div>
         <div class="field">
-          <label>${isPrivate ? '约定年利率（%）· 0 表示无利息' : '年利率（%）'}</label>
+          <label>${isPrivate ? '约定年利率（%）· 0 表示无利息' : isDaily ? '年化利率（%）· 日利率 = 年利率 ÷ 365' : '年利率（%）'}</label>
           <input id="d-rate" type="number" min="0" step="0.01" placeholder="${isPrivate ? '如 12 表示年化 12%，到期还本付息' : '如 12 表示年化 12%'}" value="${f.annualRate === '' || f.annualRate == null ? 0 : esc(f.annualRate)}">
         </div>
       </div>
@@ -1288,7 +1331,7 @@ function renderDebtForm() {
             <input id="d-periods" type="number" min="1" max="360" step="1" value="${f.periods}">
           </div>
           <div class="field">
-            <label>每期应还（元）· 按年利率自动计算</label>
+            <label>${f.kind === 'principal' || isDaily ? '首期应还（元）· 按年利率自动计算' : '每期应还（元）· 按年利率自动计算'}</label>
             <input id="d-per" class="big" type="text" readonly placeholder="填写金额、期数与年利率后自动计算">
           </div>
         </div>`}
@@ -1349,6 +1392,14 @@ function updateDebtPreview() {
     box.innerHTML = `约定还款日 <b>${dateLabel(f.firstDue)}</b> · 到期一次性归还 <b>${money(per)}</b>${rate > 0 ? `（本金 ${money(principal)} + 利息 ${money(round2(per - principal))}）· 年利率 ${rate}% · 期间 <b>${days}</b> 天` : '（无约定利息，只还本金）'}`;
   } else if (f.kind === 'interest') {
     box.innerHTML = `每期只还利息 <b>${money(per)}</b> · 末期一次性还本付息 <b>${money(last ? last.amount : total)}</b> · 共 <b>${rows.length}</b> 期 · 利息合计 <b>${money(interestSum)}</b> · 还清日 <b>${rows.length ? dateLabel(last.date) : '—'}</b>`;
+  } else if (f.kind === 'principal') {
+    const perPri = rows[0] ? rows[0].principal : 0;
+    box.innerHTML = `首期应还 <b>${money(per)}</b>（每期本金固定 <b>${money(perPri)}</b> + 当期利息，利息随剩余本金递减）· 年利率 ${rate}% · 共 <b>${rows.length}</b> 期 · 末期 <b>${money(last ? last.amount : 0)}</b> · 利息合计 <b>${money(interestSum)}</b> · 还清日 <b>${rows.length ? dateLabel(last.date) : '—'}</b>`;
+  } else if (f.kind === 'daily') {
+    const firstDays = Math.max(0, daysDiff(f.borrowDate || todayStr(), f.firstDue));
+    const perPri = rows[0] ? rows[0].principal : 0;
+    const dailyPct = String(Number((rate / 365).toFixed(4)));
+    box.innerHTML = `首期（${firstDays} 天）应还 <b>${money(per)}</b>（本金均分 <b>${money(perPri)}</b> + 剩余本金 × 日利率 ${dailyPct}% × 实际天数）· 年化 ${rate}% · 共 <b>${rows.length}</b> 期 · 末期 <b>${money(last ? last.amount : 0)}</b> · 利息合计 <b>${money(interestSum)}</b> · 还清日 <b>${rows.length ? dateLabel(last.date) : '—'}</b>`;
   } else {
     box.innerHTML = `每期应还 <b>${money(per)}</b>（年利率 ${rate}% · 共 <b>${rows.length}</b> 期）· 末期 <b>${money(last ? last.amount : 0)}</b> · 利息合计 <b>${money(interestSum)}</b> · 还清日 <b>${rows.length ? dateLabel(last.date) : '—'}</b>`;
   }
@@ -1540,7 +1591,7 @@ function renderSettings() {
         <div class="path-box" id="data-path">${esc(state.dataPathText) || '读取中…'}</div>
 
         <h3 style="margin-top:20px">关于</h3>
-        <div class="kv"><span class="k">应用</span><span class="v">个人财务管家 v1.0.0</span></div>
+        <div class="kv"><span class="k">应用</span><span class="v">真好管账 v1.1.0</span></div>
         <div class="kv"><span class="k">技术栈</span><span class="v">Electron + 原生 JS</span></div>
         <div class="kv"><span class="k">快捷键</span><span class="v">Ctrl+N 记账 · Esc 关闭弹窗</span></div>
       </div>
@@ -2234,7 +2285,7 @@ function loadSample() {
   if (!debtList().length) {
     const mkDebt = (o) => ({ payments: [], note: '', minRate: 0.1, annualRate: 0, noAuto: false, createdAt: Date.now(), ...o });
     const samples = [
-      // 支付宝借呗：借 5 万分 12 期，年利率 12%，已还 6 期（每月等额还款）
+      // 支付宝借呗：借 5 万分 12 期，年利率 12%，已还 6 期（等额本息）
       mkDebt({
         id: newId(), platform: '支付宝借呗', kind: 'equal', total: 50000,
         borrowDate: addMonths(todayStr(), -6), firstDue: addMonths(todayStr(), -5),
@@ -2251,6 +2302,12 @@ function loadSample() {
         id: newId(), platform: '京东白条', kind: 'interest', total: 2400,
         borrowDate: addMonths(todayStr(), -4), firstDue: addMonths(todayStr(), -3),
         periods: 3, annualRate: 0, note: '手机分期 · 已结清'
+      }),
+      // 借呗式：借 2 万分 6 期，年化 10.95%（日利率 0.03%）按日计息，首期约 33 天
+      mkDebt({
+        id: newId(), platform: '美团生意贷', kind: 'daily', total: 20000,
+        borrowDate: addMonths(todayStr(), -3), firstDue: addMonths(todayStr(), -2),
+        periods: 6, annualRate: 10.95, note: '日利率 0.03% · 按日计息'
       })
     ];
     samples.forEach((d) => {
@@ -2287,8 +2344,12 @@ function bindEvents() {
   document.addEventListener('click', (e) => {
     const t = e.target.closest('[data-action]');
 
-    // 点击弹窗遮罩关闭
-    if (e.target.id === 'modal-root') { closeForm(); return; }
+    // 点击弹窗遮罩：记账 / 新增负债弹窗不允许点遮罩关闭，只能手动关闭（✕ / 取消 / Esc）。
+    // 否则在输入框中按住鼠标拖选文字、光标移出弹窗外松开时，会误触发遮罩点击导致弹窗消失。
+    if (e.target.id === 'modal-root') {
+      if (state.catForm) closeForm(); // 分类弹窗保留点遮罩关闭
+      return;
+    }
     if (!t) return;
 
     const a = t.dataset.action;

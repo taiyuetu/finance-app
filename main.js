@@ -13,6 +13,34 @@ function dataFile() {
   return path.join(app.getPath('userData'), 'finance-data.json');
 }
 
+/**
+ * 产品改名（个人财务管家 → 真好管账）后 Electron 的 userData 目录名随之变化，
+ * 首次启动时把旧目录里的账本复制到新目录，保证老用户数据不丢（旧文件保留作备份）。
+ */
+function migrateLegacyData() {
+  const cur = dataFile();
+  try { if (fs.existsSync(cur)) return; } catch { /* 读取失败也继续尝试迁移 */ }
+  const osHome = require('node:os').homedir();
+  const base = process.platform === 'win32'
+    ? (process.env.APPDATA || path.join(osHome, 'AppData', 'Roaming'))
+    : process.platform === 'darwin'
+      ? path.join(osHome, 'Library', 'Application Support')
+      : (process.env.XDG_CONFIG_HOME || path.join(osHome, '.config'));
+  for (const dir of ['个人财务管家', 'finance-app']) {
+    const old = path.join(base, dir, 'finance-data.json');
+    try {
+      if (!fs.existsSync(old)) continue;
+      fs.mkdirSync(path.dirname(cur), { recursive: true });
+      fs.copyFileSync(old, cur);
+      console.log('[data] 已迁移旧账本:', old, '→', cur);
+      return;
+    } catch (err) {
+      console.error('[data] 数据迁移失败:', err.message);
+      return;
+    }
+  }
+}
+
 function defaultData() {
   return {
     version: 1,
@@ -156,7 +184,7 @@ function createWindow() {
     height: 780,
     minWidth: 940,
     minHeight: 620,
-    title: '个人财务管家',
+    title: '真好管账',
     backgroundColor: '#f4f6fb',
     show: false,
     webPreferences: {
@@ -219,6 +247,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  migrateLegacyData();
   startDataWatcher();
   createWindow();
   app.on('activate', () => {

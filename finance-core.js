@@ -18,7 +18,9 @@ const CATEGORIES = {
 };
 
 const REPAY_METHODS = {
-  equal: '每月等额还款',
+  principal: '等额本金',
+  equal: '等额本息',
+  daily: '按日计息',
   minimum: '每期最低还款',
   interest: '先息后本还款',
   private: '民间借贷'
@@ -166,11 +168,15 @@ function defaultDataFile() {
   } else {
     base = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
   }
-  // Electron 的 userData 目录取 package.json 的 productName（个人财务管家）；
-  // 兼容旧版目录名 finance-app（README 早期写法）
-  const primary = path.join(base, '个人财务管家', 'finance-data.json');
+  // Electron 的 userData 目录取 package.json 的 productName（真好管账）；
+  // 兼容旧版目录名：个人财务管家（旧版 productName）、finance-app（README 早期写法）
+  const primary = path.join(base, '真好管账', 'finance-data.json');
+  const legacyName = path.join(base, '个人财务管家', 'finance-data.json');
   const legacy = path.join(base, 'finance-app', 'finance-data.json');
-  if (!fs.existsSync(primary) && fs.existsSync(legacy)) return legacy;
+  if (!fs.existsSync(primary)) {
+    if (fs.existsSync(legacyName)) return legacyName;
+    if (fs.existsSync(legacy)) return legacy;
+  }
   return primary;
 }
 
@@ -221,7 +227,9 @@ function equalPerPeriod(total, rate, n) {
 
 /**
  * 生成某笔负债的还款计划表：
- * - equal（每月等额还款）：等额本息，末期轧差
+ * - principal（等额本金）：每期归还本金固定不变，利息按剩余本金计逐期递减，末期轧差
+ * - equal（等额本息）：每期还款（本金+利息）总额固定，利息随剩余本金递减，末期轧差
+ * - daily（按日计息·借呗口径）：每期本金固定，利息 = 剩余本金 × 日利率 × 当期实际天数
  * - minimum（每期最低还款）：按最低还款比例逐期冲抵本金
  * - interest（先息后本还款）：每期只还利息，末期还本
  * - private（民间借贷）：约定还款日一次性还本付息
@@ -282,6 +290,39 @@ function debtSchedule(d) {
       for (let i = 1; i <= n; i++) {
         const principal = i === n ? total : 0;
         push(i, addMonths(d.firstDue, i - 1), principal + interest, interest, principal);
+      }
+    } else if (d.kind === 'principal') {
+      // 等额本金：每期归还本金固定，利息按剩余本金计，每期应还逐月下降，末期轧差
+      const perPri = round2(total / n);
+      let remain = total;
+      for (let i = 1; i <= n; i++) {
+        const interest = rate > 0 ? round2(remain * rate) : 0;
+        const principal = i === n ? remain : Math.min(perPri, remain);
+        push(i, addMonths(d.firstDue, i - 1), round2(principal + interest), interest, principal);
+        remain = round2(remain - principal);
+        if (remain <= 0 && i < n) {
+          for (let j = i + 1; j <= n; j++) push(j, addMonths(d.firstDue, j - 1), 0, 0, 0);
+          break;
+        }
+      }
+    } else if (d.kind === 'daily') {
+      // 按日计息（借呗口径）：每期本金固定，利息 = 剩余本金 × 日利率 × 当期实际天数，末期轧差
+      const daily = Math.max(0, Number(d.annualRate) || 0) / 100 / 365;
+      const perPri = round2(total / n);
+      let remain = total;
+      let prevDate = d.borrowDate || today;
+      for (let i = 1; i <= n; i++) {
+        const date = addMonths(d.firstDue, i - 1);
+        const days = Math.max(0, daysDiff(prevDate, date));
+        prevDate = date;
+        const interest = daily > 0 ? round2(remain * daily * days) : 0;
+        const principal = i === n ? remain : Math.min(perPri, remain);
+        push(i, date, round2(principal + interest), interest, principal);
+        remain = round2(remain - principal);
+        if (remain <= 0 && i < n) {
+          for (let j = i + 1; j <= n; j++) push(j, addMonths(d.firstDue, j - 1), 0, 0, 0);
+          break;
+        }
       }
     } else {
       const per = equalPerPeriod(total, rate, n);

@@ -1,8 +1,8 @@
 {
   "name": "finance-app",
-  "productName": "个人财务管家",
-  "version": "1.0.0",
-  "description": "个人财务管理桌面应用（Electron）",
+  "productName": "真好管账",
+  "version": "1.1.0",
+  "description": "个人财务管理桌面应用（Electron）——真好管账",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -14,7 +14,7 @@
   },
   "build": {
     "appId": "com.hdmso.finance",
-    "productName": "个人财务管家",
+    "productName": "真好管账",
     "asar": false,
     "directories": {
       "output": "dist"
@@ -40,7 +40,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "个人财务管家",
+      "shortcutName": "真好管账",
       "language": "2052",
       "artifactName": "${productName} Setup ${version}.exe"
     }
