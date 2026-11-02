@@ -10,6 +10,7 @@
     "mcp": "node mcp-server.js",
     "mcp:http": "node mcp-server.js --http 3721",
     "test:mcp": "node test-mcp.js",
+    "test:debt": "node test-parse-plan.js && electron test-debt-paste.js",
     "pack": "electron-builder --win nsis"
   },
   "build": {

@@ -81,6 +81,16 @@ function normalizeDebt(x) {
     minRate: Math.min(1, Math.max(0.01, minRate)),
     annualRate: Math.max(0, Number(x.annualRate) || 0),
     note: String(x.note || ''),
+    // 平台账单计划（照抄平台每期应还，金额与平台一致；旧数据无此字段 = 自动计算）
+    planSource: x.planSource === 'manual' ? 'manual' : 'calc',
+    manualPlan: (Array.isArray(x.manualPlan) ? x.manualPlan : [])
+      .filter((p) => p && p.date)
+      .map((p, idx) => ({
+        no: idx + 1,
+        date: String(p.date),
+        amount: round2(Math.max(0, Number(p.amount) || 0)),
+        interest: round2(Math.max(0, Number(p.interest) || 0))
+      })),
     payments: (Array.isArray(x.payments) ? x.payments : []).map((p) => {
       const pay = {
         no: Math.max(1, Math.round(Number(p.no) || 1)),
@@ -234,6 +244,8 @@ function equalPerPeriod(total, rate, n) {
  * - minimum（每期最低还款）：按最低还款比例逐期冲抵本金
  * - interest（先息后本还款）：每期只还利息，末期还本
  * - private（民间借贷）：约定还款日一次性还本付息
+ * 计划来源 planSource === 'manual'（平台账单）：直接采用录入的每期应还金额（照抄平台还款计划），
+ * 优先于以上所有公式计算；本金 = 应还金额 − 利息
  * 每期状态：paid 已还 / overdue 逾期 / due 待还
  */
 function debtSchedule(d) {
@@ -253,7 +265,17 @@ function debtSchedule(d) {
     rows.push({ no, date, amount: a, interest: it, principal: pr, paid: !!p, paidInfo: p || null });
   };
 
-  if (d.kind === 'minimum') {
+  // 平台账单计划：每期金额直接来自录入（与平台一致），优先于公式计算
+  const manualPlan = d.planSource === 'manual' && Array.isArray(d.manualPlan)
+    ? d.manualPlan.filter((p) => p && p.date && Number(p.amount) > 0)
+    : null;
+  if (manualPlan) {
+    manualPlan.forEach((p, idx) => {
+      const amount = round2(Number(p.amount) || 0);
+      const it = p.interest == null || p.interest === '' ? 0 : round2(Number(p.interest) || 0);
+      push(idx + 1, p.date, amount, it, round2(amount - it));
+    });
+  } else if (d.kind === 'minimum') {
     const minRate = Number(d.minRate) > 0 ? Number(d.minRate) : 0.1;
     let remain = total;
     let i = 0;

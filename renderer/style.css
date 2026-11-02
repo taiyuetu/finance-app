@@ -521,6 +521,7 @@ tr.debt-detail > td { background: #f8fafc; padding: 8px 12px 18px; }
   line-height: 1.6;
 }
 .preview-box b { color: #4f46e5; font-weight: 700; }
+.preview-box .btn.sm { vertical-align: middle; margin-left: 4px; }
 /* ---------- 还款方式下拉 / 自动计算的只读金额 ---------- */
 select#d-kind { font-weight: 600; color: #0f172a; }
 input[readonly] { background: #f8fafc; color: #4f46e5; font-weight: 700; cursor: default; }
@@ -585,3 +586,19 @@ input[readonly]:focus { box-shadow: none; }
   .grid-2 { grid-template-columns: 1fr; }
   .budget-row { grid-template-columns: 12px 1fr 140px 160px 48px; }
 }
+
+/* ---- 平台账单计划编辑器（负债·计划来源=平台账单） ---- */
+.plan-edit { margin-top: 6px; }
+.plan-edit table { width: 100%; border-collapse: collapse; }
+.plan-edit th { font-size: 12px; color: #94a3b8; font-weight: 600; text-align: left; padding: 5px 6px; white-space: nowrap; }
+.plan-edit td { padding: 3px 6px; border-top: 1px dashed #e2e8f0; font-size: 12.5px; vertical-align: middle; }
+.plan-edit input { width: 100%; box-sizing: border-box; border: 1px solid #e2e8f0; border-radius: 6px; padding: 5px 7px; font-size: 12.5px; background: #fff; color: inherit; }
+.plan-edit .plan-no { white-space: nowrap; color: #64748b; }
+.plan-edit .plan-chk { white-space: nowrap; font-size: 12px; }
+.plan-ok { color: #16a34a; }
+.plan-warn { color: #d97706; }
+.plan-na { color: #cbd5e1; }
+.plan-tools { display: flex; gap: 8px; align-items: center; margin-top: 7px; flex-wrap: wrap; }
+.plan-paste { margin-top: 9px; }
+.plan-paste summary { font-size: 12.5px; color: #64748b; cursor: pointer; }
+.plan-paste textarea { width: 100%; box-sizing: border-box; border: 1px solid #e2e8f0; border-radius: 8px; padding: 7px 9px; margin-top: 6px; font-size: 12px; font-family: inherit; min-height: 64px; resize: vertical; background: #fff; color: inherit; }

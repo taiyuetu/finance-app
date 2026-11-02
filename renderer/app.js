@@ -190,6 +190,16 @@ function normalizeDebt(x) {
     minRate: Math.min(1, Math.max(0.01, minRate)),
     annualRate: Math.max(0, Number(x.annualRate) || 0),
     note: String(x.note || ''),
+    // 平台账单计划（照抄平台每期应还，金额与平台一致；旧数据无此字段 = 自动计算）
+    planSource: x.planSource === 'manual' ? 'manual' : 'calc',
+    manualPlan: (Array.isArray(x.manualPlan) ? x.manualPlan : [])
+      .filter((p) => p && p.date)
+      .map((p, idx) => ({
+        no: idx + 1,
+        date: String(p.date),
+        amount: round2(Math.max(0, Number(p.amount) || 0)),
+        interest: round2(Math.max(0, Number(p.interest) || 0))
+      })),
     payments: (Array.isArray(x.payments) ? x.payments : []).map((p) => {
       const pay = {
         no: Math.max(1, Math.round(Number(p.no) || 1)),
@@ -225,6 +235,8 @@ const debtList = () => (Array.isArray(state.data.debts) ? state.data.debts : [])
  * - minimum（每期最低还款）：按「最低还款比例」逐期冲抵本金，当期按剩余本金计息
  * - interest（先息后本还款）：每期只还当期利息，末期一次性归还全部本金
  * - private（民间借贷）：按约定还款日一次性还本付息（年利率为 0 则只还本金）
+ * 计划来源 planSource === 'manual'（平台账单）：直接采用录入的每期应还金额（照抄平台还款计划），
+ * 优先于以上所有公式计算，确保与平台账单一分不差；本金 = 应还金额 − 利息
  * 每期状态：paid 已还 / overdue 逾期 / due 待还
  */
 function debtSchedule(d) {
@@ -245,7 +257,17 @@ function debtSchedule(d) {
     rows.push({ no, date, amount: a, interest: it, principal: pr, paid: !!p, paidInfo: p || null });
   };
 
-  if (d.kind === 'minimum') {
+  // 平台账单计划：每期金额直接来自录入（与平台一致），优先于公式计算
+  const manualPlan = d.planSource === 'manual' && Array.isArray(d.manualPlan)
+    ? d.manualPlan.filter((p) => p && p.date && Number(p.amount) > 0)
+    : null;
+  if (manualPlan) {
+    manualPlan.forEach((p, idx) => {
+      const amount = round2(Number(p.amount) || 0);
+      const it = p.interest == null || p.interest === '' ? 0 : round2(Number(p.interest) || 0);
+      push(idx + 1, p.date, amount, it, round2(amount - it));
+    });
+  } else if (d.kind === 'minimum') {
     const minRate = Number(d.minRate) > 0 ? Number(d.minRate) : 0.1;
     let remain = total;
     let i = 0;
@@ -1028,6 +1050,7 @@ function debtDetailHtml(d, i) {
       </table>
     </div>
     ${!full && all.length > 18 ? `<div class="hint-line">仅显示前 18 期，共 ${all.length} 期；其余 ${all.length - 18} 期合计 ${money(round2(all.slice(18).reduce((s, r) => s + r.amount, 0)))}。</div>` : ''}
+    ${d.planSource === 'manual' ? `<div class="hint-line">本笔为「平台账单」计划：每期应还金额直接照抄平台还款计划，与平台账单一致${Number(d.annualRate) > 0 ? `；校验列按 剩余本金 × 日利率 ${String(Number((Math.max(0, Number(d.annualRate) || 0) / 365).toFixed(4)))}% × 实际天数 复核每期利息` : ''}。</div>` : ''}
     <div class="hint-line">标记还款仅开放至 <b>${dateLabel(payWindowEnd())}</b>（本月 + 下月，更早的期次为逾期也可标记）；再往后的期次会显示「未到还款期」，如需一次性还清可点右上角「⏩ 提前结清」（含已产生利息，未来期次不计息）。</div>`;
 }
 
@@ -1131,7 +1154,8 @@ function renderDebts() {
         ? `<b>${i.paidCount} / ${i.count}</b> 期`
         : `<b>已还 ${i.paidCount} 期</b><div class="cell-sub">预计共 ${i.count} 期</div>`;
     const annual = Math.max(0, Number(d.annualRate) || 0);
-    const perSub = d.kind === 'minimum'
+    const manual = d.planSource === 'manual';
+    const perSubByKind = d.kind === 'minimum'
       ? `最低 ${(Math.max(0.01, Number(d.minRate) || 0.1) * 100).toFixed(0)}% 计`
       : d.kind === 'interest'
         ? `年利率 ${annual}% · 每期利息`
@@ -1142,6 +1166,9 @@ function renderDebts() {
             : d.kind === 'principal'
               ? annual > 0 ? `年利率 ${annual}% · 逐期递减` : '免息 · 每期本金均分'
               : annual > 0 ? `年化 ${annual}% · 按日定额` : '免息 · 每期固定';
+    const perSub = manual
+      ? `平台账单计划${annual > 0 ? ` · 年化 ${annual}%` : ''}`
+      : perSubByKind;
     const perCell = d.kind === 'minimum'
       ? `<b>${i.next ? money(i.next.amount) : '—'}</b><div class="cell-sub">${perSub}</div>`
       : `<b>${i.rows[0] ? money(i.rows[0].amount) : money(i.per)}</b><div class="cell-sub">${perSub}</div>`;
@@ -1157,7 +1184,7 @@ function renderDebts() {
           <button class="link-btn plat" data-action="debt-expand" data-id="${d.id}" title="展开/收起还款明细">${open ? '▾' : '▸'} ${esc(d.platform)}</button>
           ${d.note ? `<div class="cell-sub">${esc(d.note)}</div>` : ''}
         </td>
-        <td><span class="badge kind">${REPAY_METHODS[d.kind]}</span></td>
+        <td><span class="badge kind">${manual ? '平台账单' : REPAY_METHODS[d.kind]}</span></td>
         <td>${dateLabel(d.borrowDate)}</td>
         <td>${d.kind === 'private'
           ? `<b>${dateLabel(d.firstDue)}</b><div class="cell-sub">约定还款日</div>`
@@ -1237,11 +1264,18 @@ function renderDebts() {
 
 function openDebtForm(d) {
   state.debtForm = d
-    ? { ...d, kind: REPAY_METHODS[d.kind] ? d.kind : 'equal', payments: [...(d.payments || [])] }
+    ? {
+        ...d, kind: REPAY_METHODS[d.kind] ? d.kind : 'equal', payments: [...(d.payments || [])],
+        planSource: d.planSource === 'manual' ? 'manual' : 'calc',
+        manualPlan: (Array.isArray(d.manualPlan) ? d.manualPlan : []).map((p) => ({ ...p })),
+        planText: '',   // 粘贴框草稿文本（只在编辑期间保留，不入库）
+        parsedText: ''  // 上次已成功解析的文本，避免重复解析覆盖手工修改
+      }
     : {
         id: null, kind: 'equal', platform: '', total: '',
         borrowDate: todayStr(), firstDue: addMonths(todayStr(), 1),
-        periods: 12, perPeriod: '', minRate: 10, annualRate: 0, note: ''
+        periods: 12, perPeriod: '', minRate: 10, annualRate: 0, note: '',
+        planSource: 'calc', manualPlan: [], planText: '', parsedText: ''
       };
   renderDebtForm();
   $('#modal-root').classList.remove('hidden');
@@ -1261,6 +1295,154 @@ function syncDebtInputs() {
   const per = get('#d-per'); if (per !== null) f.perPeriod = per;
   const minrate = get('#d-minrate'); if (minrate !== null) f.minRate = minrate;
   const rate = get('#d-rate'); if (rate !== null) f.annualRate = rate;
+  const psrc = get('#d-plan-src'); if (psrc !== null) f.planSource = psrc === 'manual' ? 'manual' : 'calc';
+  const ptext = get('#d-plan-text'); if (ptext !== null) f.planText = ptext;
+}
+
+/** 平台账单计划：按 剩余本金 × 日利率 × 实际天数 校验某期利息（返回 null 表示无法校验） */
+function planCheck(f, idx, plan) {
+  const rate = Math.max(0, Number(f.annualRate) || 0);
+  if (rate <= 0 || !f.borrowDate || !plan || !plan[idx] || !plan[idx].date) return null;
+  const daily = rate / 100 / 365;
+  const total = round2(Number(f.total) || 0);
+  let bal = total;
+  for (let j = 0; j < idx; j++) {
+    bal = round2(bal - (round2(Number(plan[j].amount) || 0) - round2(Number(plan[j].interest) || 0)));
+  }
+  const prev = idx === 0 ? f.borrowDate : (plan[idx - 1].date || f.borrowDate);
+  if (plan[idx].date < prev) return null;
+  const days = daysDiff(prev, plan[idx].date);
+  const exp = round2(bal * daily * days);
+  const act = round2(Number(plan[idx].interest) || 0);
+  return { days, bal, exp, diff: round2(act - exp) };
+}
+
+/** 解析从账单粘贴的文本：每行一期「日期 应还金额 [利息]」，
+ *  支持 2026年11月5日 / 2026-11-05 / 2026/11/5 / 2026.11.05 / 11月5日 / 行首 11-05 等日期与「含利息X」写法；
+ *  无年份时用 yearHint（首期应还日期）补全年份，跨年（12月 → 次年 1月）自动进位 */
+function parsePlanText(text, yearHint) {
+  const yh = String(yearHint || '').match(/^(\d{4})/);
+  const baseYear = yh ? Number(yh[1]) : new Date().getFullYear();
+  const rows = [];
+  String(text || '').split(/\r?\n/).forEach((line) => {
+    let s = String(line).trim();
+    if (!s) return;
+    s = s.replace(/(\d),(?=\d)/g, '$1'); // 千分位：3,665.36 → 3665.36
+    // ① 完整日期（含年）优先；② 无年份时识别「11月5日」；③ 行首「11-05 / 11/05」
+    const full = s.match(/(\d{4})\s*[年\-\/.]\s*(\d{1,2})\s*[月\-\/.]\s*(\d{1,2})(?!\d)\s*日?/);
+    const cn = full ? null : s.match(/(\d{1,2})\s*月\s*(\d{1,2})(?!\d)\s*日?/);
+    const en = full || cn ? null : s.match(/^(\d{1,2})\s*[-\/.]\s*(\d{1,2})(?!\d)/);
+    const m = full || cn || en;
+    if (!m) return;
+    let year = full ? Number(full[1]) : baseYear;
+    const month = Number(full ? full[2] : m[1]);
+    const day = Number(full ? full[3] : m[2]);
+    if (!(month >= 1 && month <= 12) || !(day >= 1 && day <= 31)) return;
+    let date = `${year}-${pad2(month)}-${pad2(day)}`;
+    // 无年份的行若不晚于上一期，按跨年进位（如 12月 → 次年 1月）
+    if (!full && rows.length && date <= rows[rows.length - 1].date) {
+      year += 1;
+      date = `${year}-${pad2(month)}-${pad2(day)}`;
+    }
+    // 只取日期之后的数字，避免把行首期号「1 2026-11-05 3665.36」的期号当成金额；
+    // 日期之后没有数字（「3665.36 2026-11-05」）时再回退用日期之前的数字；
+    // 「共12期 / 30天」这类期数、天数先剔除，免得被当成金额或利息
+    const numsOf = (t) => (String(t || '').replace(/\d+\s*(?:期数|期次|期|天|个月|月)/g, ' ').match(/\d+(?:\.\d+)?/g) || []).map(Number);
+    const tail = s.slice((m.index || 0) + m[0].length);
+    let nums = numsOf(tail);
+    if (!nums.length) nums = numsOf(s.slice(0, m.index || 0));
+    nums = nums.filter((x) => isFinite(x));
+    if (!(nums[0] > 0)) return;
+    // 第二个数字视为「其中利息」，必须为正且小于应还金额，否则按误识别处理（记 0）
+    const interest = nums.length > 1 && nums[1] > 0 && nums[1] < nums[0] ? nums[1] : 0;
+    rows.push({ date, amount: round2(nums[0]), interest: round2(interest) });
+  });
+  return rows;
+}
+
+/** 局部刷新计划表：只重建 <tbody>，不重建整个弹窗（保留粘贴框内容、光标与其它已填字段） */
+function refreshPlanTable() {
+  const f = state.debtForm;
+  if (!f) return;
+  const body = document.getElementById('d-plan-body');
+  if (body) body.innerHTML = planRowsHtml(f);
+  const pe = document.getElementById('d-periods');
+  if (pe && f.planSource === 'manual') pe.value = Math.max(1, (f.manualPlan || []).length);
+  updateDebtPreview();
+}
+
+/** 把粘贴框里的账单文本解析成期次填入上表（粘贴/输入时自动调用，无需再手动点按钮）；
+ *  文本与上次解析结果相同时不重复解析，以免覆盖上表里手工修改过的期次 */
+function autoParsePlanText(force) {
+  const f = state.debtForm;
+  if (!f) return false;
+  const ta = document.getElementById('d-plan-text');
+  const text = ta ? String(ta.value || '') : String(f.planText || '');
+  f.planText = text;
+  const status = document.getElementById('d-plan-status');
+  if (!text.trim()) return false;
+  if (!force && text === String(f.parsedText || '')) return true; // 已按当前文本解析过
+  const parsed = parsePlanText(text, f.firstDue || f.borrowDate);
+  if (!parsed.length) {
+    if (status) status.innerHTML = '<span class="plan-warn">⚠ 未解析到有效行：每行需包含「日期 + 应还金额」，如 2026年11月5日 3665.36 含利息516.08</span>';
+    return false;
+  }
+  f.manualPlan = parsed;
+  f.parsedText = text;
+  refreshPlanTable();
+  const lines = text.split(/\r?\n/).filter((l) => l.trim()).length;
+  if (status) status.innerHTML = `<span class="plan-ok">✓ 已解析 ${parsed.length} 期并填入上表${lines > parsed.length ? `（跳过 ${lines - parsed.length} 行无法识别）` : ''}，核对后点「保存」</span>`;
+  return true;
+}
+
+/** 计划表格 <tbody> 行内容（首次渲染与局部刷新共用） */
+function planRowsHtml(f) {
+  const plan = Array.isArray(f.manualPlan) ? f.manualPlan : [];
+  const rate = Math.max(0, Number(f.annualRate) || 0);
+  return plan.map((p, idx) => {
+    const c = planCheck(f, idx, plan);
+    const chk = !c
+      ? '<span class="plan-na">—</span>'
+      : Math.abs(c.diff) <= 0.5
+        ? `<span class="plan-ok" title="剩余本金 ${money(c.bal)} × 日利率 × ${c.days} 天 = ${money(c.exp)}">✓ ${c.days} 天</span>`
+        : `<span class="plan-warn" title="按 剩余本金 ${money(c.bal)} × 日利率 × ${c.days} 天 应为 ${money(c.exp)}">⚠ 差 ${c.diff > 0 ? '+' : ''}${money(c.diff)}</span>`;
+    return `
+      <tr>
+        <td class="plan-no">第 ${idx + 1} 期</td>
+        <td><input type="date" data-plan-idx="${idx}" data-plan-k="date" value="${esc(p.date || '')}"></td>
+        <td><input type="number" min="0" step="0.01" inputmode="decimal" data-plan-idx="${idx}" data-plan-k="amount" value="${p.amount === '' || p.amount == null ? '' : esc(p.amount)}" placeholder="0.00"></td>
+        <td><input type="number" min="0" step="0.01" inputmode="decimal" data-plan-idx="${idx}" data-plan-k="interest" value="${p.interest === '' || p.interest == null ? '' : esc(p.interest)}" placeholder="0.00"></td>
+        <td class="plan-chk">${chk}</td>
+        <td><button type="button" class="icon-btn del" title="删除该期" data-action="debt-plan-del" data-idx="${idx}">✕</button></td>
+      </tr>`;
+  }).join('') || `<tr><td colspan="6" class="plan-na" style="padding:14px 6px">还没有期次：点下方「＋ 添加一期」逐期录入，或直接从平台账单粘贴导入</td></tr>`;
+}
+
+/** 平台账单计划编辑器（逐期录入 + 利息校验 + 粘贴批量导入） */
+function planEditorHtml(f) {
+  const plan = Array.isArray(f.manualPlan) ? f.manualPlan : [];
+  const rate = Math.max(0, Number(f.annualRate) || 0);
+  const dailyPct = String(Number((rate / 365).toFixed(4)));
+  return `
+    <div class="plan-edit">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>期数</th><th>应还日期</th><th>应还金额</th><th>其中利息</th><th>利息校验${rate > 0 ? `（日利率 ${dailyPct}%）` : '（填年化利率后自动校验）'}</th><th></th></tr></thead>
+          <tbody id="d-plan-body">${planRowsHtml(f)}</tbody>
+        </table>
+      </div>
+      <div class="plan-tools">
+        <button type="button" class="btn sm plain" data-action="debt-plan-add">＋ 添加一期</button>
+      </div>
+      <details class="plan-paste" id="d-plan-paste"${plan.length ? '' : ' open'}>
+        <summary>从账单粘贴批量导入（每行一期，粘贴后自动解析并替换现有期次）</summary>
+        <textarea id="d-plan-text" placeholder="从借呗/银行账单复制每行计划：日期 + 应还金额 +（可选）利息，例如：&#10;2026年11月5日 3665.36 含利息516.08&#10;2026年12月5日 3679.92 含利息457.87&#10;也支持：2026-11-05, 3679.92, 457.87">${esc(f.planText || '')}</textarea>
+        <div class="plan-tools">
+          <button type="button" class="btn sm plain" data-action="debt-plan-parse">解析并填入</button>
+          <span class="hint-line" id="d-plan-status">粘贴即自动解析填入上表：日期后的第一个数字为应还金额，第二个数字（可选）为其中利息；填入后仍可逐行修改。</span>
+        </div>
+      </details>
+    </div>`;
 }
 
 function renderDebtForm() {
@@ -1269,6 +1451,7 @@ function renderDebtForm() {
   const isMin = f.kind === 'minimum';
   const isPrivate = f.kind === 'private';
   const isDaily = f.kind === 'daily';
+  const isManual = f.planSource === 'manual';
   const methodOptions = Object.entries(REPAY_METHODS).map(([k, v]) =>
     `<option value="${k}"${f.kind === k ? ' selected' : ''}>${v}</option>`).join('');
   $('#modal-root').innerHTML = `
@@ -1301,7 +1484,7 @@ function renderDebtForm() {
         </div>
         <div class="field">
           <label>${isPrivate ? '约定年利率（%）· 0 表示无利息' : (isDaily || f.kind === 'equal') ? '年化利率（%）· 日利率 = 年利率 ÷ 365' : '年利率（%）'}</label>
-          <input id="d-rate" type="number" min="0" step="0.01" placeholder="${isPrivate ? '如 12 表示年化 12%，到期还本付息' : '如 12 表示年化 12%'}" value="${f.annualRate === '' || f.annualRate == null ? 0 : esc(f.annualRate)}">
+          <input id="d-rate" type="number" min="0" step="0.01" placeholder="${isPrivate ? '如 12 表示年化 12%，到期还本付息' : (isDaily || f.kind === 'equal') ? '如 12 表示年化 12%；借呗日利率 0.044% → 填 16.06' : '如 12 表示年化 12%'}" value="${f.annualRate === '' || f.annualRate == null ? 0 : esc(f.annualRate)}">
         </div>
       </div>
 
@@ -1333,14 +1516,27 @@ function renderDebtForm() {
         </div>` : `
         <div class="field-row">
           <div class="field">
-            <label>还款期数</label>
-            <input id="d-periods" type="number" min="1" max="360" step="1" value="${f.periods}">
+            <label>计划来源</label>
+            <select id="d-plan-src">
+              <option value="calc"${isManual ? '' : ' selected'}>自动计算（按公式估算每期应还）</option>
+              <option value="manual"${isManual ? ' selected' : ''}>平台账单（照抄每期金额，与平台一分不差）</option>
+            </select>
           </div>
           <div class="field">
-            <label>${f.kind === 'principal' || isDaily ? '首期应还（元）· 按年利率自动计算' : '每期应还（元）· 按年利率自动计算'}</label>
-            <input id="d-per" class="big" type="text" readonly placeholder="填写金额、期数与年利率后自动计算">
+            <label>还款期数${isManual ? '（自动 = 计划期数）' : ''}</label>
+            <input id="d-periods" type="number" min="1" max="360" step="1" value="${isManual ? (f.manualPlan || []).length || 1 : f.periods}"${isManual ? ' readonly' : ''}>
           </div>
-        </div>`}
+        </div>
+        ${isManual ? `
+        <div class="field">
+          <label>每期应还（元）· 照抄平台还款计划，金额与平台一致</label>
+          <input id="d-per" class="big" type="text" readonly placeholder="添加/粘贴计划期次后自动合计">
+        </div>
+        ${planEditorHtml(f)}` : `
+        <div class="field">
+          <label>${f.kind === 'principal' || isDaily ? '首期应还（元）· 按年利率自动计算' : '每期应还（元）· 按年利率自动计算'}</label>
+          <input id="d-per" class="big" type="text" readonly placeholder="填写金额、期数与年利率后自动计算">
+        </div>`}`}
 
       <div class="preview-box" id="d-preview"></div>
       <div class="form-error" id="d-err"></div>
@@ -1364,6 +1560,8 @@ function draftSchedule(f, total, n) {
     periods: n,
     minRate: Number(f.minRate) > 0 ? Number(f.minRate) / 100 : 0.1,
     annualRate: Math.max(0, Number(f.annualRate) || 0),
+    planSource: f.planSource === 'manual' ? 'manual' : 'calc',
+    manualPlan: Array.isArray(f.manualPlan) ? f.manualPlan : [],
     payments: []
   });
 }
@@ -1389,6 +1587,20 @@ function updateDebtPreview() {
   const interestSum = round2(rows.reduce((s, r) => s + (r.interest || 0), 0));
   if (perEl) perEl.value = per > 0 ? per.toFixed(2) : '';
 
+  if (f.planSource === 'manual') {
+    // 平台账单计划：金额来自录入，这里只做展示与校验
+    const planRows = draftSchedule(f, round2(total), n);
+    const prinSum = round2(planRows.reduce((s, r) => s + (r.principal || 0), 0));
+    const intSum = round2(planRows.reduce((s, r) => s + (r.interest || 0), 0));
+    const okPrin = Math.abs(prinSum - total) <= 1;
+    const bad = rate > 0
+      ? planRows.filter((r, idx) => { const c = planCheck(f, idx, f.manualPlan || []); return c && Math.abs(c.diff) > 0.5; }).length
+      : 0;
+    const dailyPct = String(Number((rate / 365).toFixed(4)));
+    if (perEl) perEl.value = planRows[0] && planRows[0].amount > 0 ? planRows[0].amount.toFixed(2) : '';
+    box.innerHTML = `共 <b>${planRows.length}</b> 期（照抄平台账单，金额与平台一致）· 本金合计 <b>${money(prinSum)}</b>${okPrin ? ' ✓ 与欠款金额一致' : ` <span class="plan-warn">⚠ 与欠款金额 ${money(total)} 不一致</span> <button type="button" class="btn sm plain" data-action="debt-total-sync" title="把欠款总金额改为各期（应还 − 利息）之和">按计划本金合计填入总金额</button>`} · 利息合计 <b>${money(intSum)}</b> · 合计应还 <b>${money(round2(prinSum + intSum))}</b> · 还清日 <b>${planRows.length ? dateLabel(planRows[planRows.length - 1].date) : '—'}</b>${rate > 0 ? (bad ? ` · <span class="plan-warn">利息校验：${bad} 期与 日利率 ${dailyPct}% × 实际天数 的计算偏差较大，请核对</span>` : ' · 利息校验：各期与日利率 × 实际天数 吻合 ✓') : ''}`;
+    return;
+  }
   if (f.kind === 'minimum') {
     const pct = Math.min(100, Math.max(1, Number(f.minRate) || 10));
     box.innerHTML = `本期应还约 <b>${money(per)}</b>（最低 ${pct.toFixed(0)}% + 当期利息）· 年利率 <b>${rate}%</b> · 预计 <b>${rows.length}</b> 期还清 · 还清日约 <b>${rows.length ? dateLabel(last.date) : '—'}</b>`;
@@ -1426,8 +1638,34 @@ function saveDebtForm() {
   if (!REPAY_METHODS[f.kind]) { err.textContent = '请选择还款方式'; return; }
   if (!isFinite(Number(f.annualRate)) || Number(f.annualRate) < 0) { err.textContent = '请输入有效的年利率'; return; }
 
+  // 平台账单计划校验：每期金额/日期有效，且本金合计（应还 − 利息）与欠款总额一致
+  let manualRows = [];
+  if (f.planSource === 'manual') {
+    // 兜底：粘贴框里有账单文本但还没解析成期次（例如粘贴后直接点了保存），先解析再校验
+    const pasteTxt = String(f.planText || '');
+    if (pasteTxt.trim() && pasteTxt !== String(f.parsedText || '')) {
+      const parsed = parsePlanText(pasteTxt, f.firstDue || f.borrowDate);
+      if (parsed.length) { f.manualPlan = parsed; f.parsedText = pasteTxt; refreshPlanTable(); }
+    }
+    const pendingPaste = Boolean(pasteTxt.trim()) && pasteTxt !== String(f.parsedText || ''); // 粘贴内容仍没能解析
+    manualRows = (Array.isArray(f.manualPlan) ? f.manualPlan : []).filter((p) => p && p.date);
+    if (!manualRows.length) { err.textContent = '计划来源选择了「平台账单」，请先添加期次或粘贴导入计划'; return; }
+    for (let idx = 0; idx < manualRows.length; idx++) {
+      if (!(Number(manualRows[idx].amount) > 0)) {
+        err.textContent = pendingPaste
+          ? '粘贴的账单还没解析进计划表：请在「从账单粘贴批量导入」里粘贴文本（会自动解析填入），或点「解析并填入」'
+          : `第 ${idx + 1} 期的应还金额需大于 0`;
+        return;
+      }
+      if (manualRows[idx].date < f.borrowDate) { err.textContent = `第 ${idx + 1} 期的还款日期不能早于欠债日期`; return; }
+      if (idx && manualRows[idx].date <= manualRows[idx - 1].date) { err.textContent = `第 ${idx + 1} 期的还款日期需晚于上一期`; return; }
+    }
+    const prinSum = round2(manualRows.reduce((s, p) => s + round2(Number(p.amount) || 0) - round2(Number(p.interest) || 0), 0));
+    if (Math.abs(prinSum - total) > 1) { err.textContent = `计划本金合计 ${prinSum.toFixed(2)} 与欠款总金额 ${total.toFixed(2)} 不一致（本金 = 应还金额 − 利息），请核对每期金额`; return; }
+  }
+
   // 民间借贷只有约定还款日一期
-  const periods = f.kind === 'private' ? 1 : Math.max(1, Math.round(Number(f.periods) || 12));
+  const periods = f.kind === 'private' ? 1 : f.planSource === 'manual' ? manualRows.length : Math.max(1, Math.round(Number(f.periods) || 12));
   // 每期应还完全由「还款方式 + 年利率 + 期数」自动算出，保存时回写存档
   const rows = draftSchedule({ ...f, periods }, total, periods);
 
@@ -1439,6 +1677,10 @@ function saveDebtForm() {
     firstDue: f.firstDue,
     periods,
     perPeriod: round2(rows[0] && rows[0].amount > 0 ? rows[0].amount : 0),
+    planSource: f.planSource === 'manual' ? 'manual' : 'calc',
+    manualPlan: f.planSource === 'manual'
+      ? manualRows.map((p, idx) => ({ no: idx + 1, date: p.date, amount: round2(Number(p.amount) || 0), interest: round2(Number(p.interest) || 0) }))
+      : [],
     minRate: Math.min(1, Math.max(0.01, (Number(f.minRate) || 10) / 100)),
     annualRate: round2(Math.max(0, Number(f.annualRate) || 0)),
     note: String(f.note || '').trim()
@@ -2406,6 +2648,58 @@ function bindEvents() {
         break;
       }
       case 'debt-save': saveDebtForm(); break;
+      case 'debt-plan-add': {
+        syncDebtInputs();
+        const f = state.debtForm;
+        if (!f) break;
+        if (!Array.isArray(f.manualPlan)) f.manualPlan = [];
+        const lastDate = f.manualPlan.length ? f.manualPlan[f.manualPlan.length - 1].date : (f.firstDue || todayStr());
+        f.manualPlan.push({ date: addMonths(lastDate, 1), amount: '', interest: '' });
+        // 就地插入新行：不重建整个弹窗（重建会重放 .modal 的 pop 打开动画、丢失滚动位置与焦点）
+        refreshPlanTable();
+        const idx = f.manualPlan.length - 1;
+        const cell = document.querySelector(`#d-plan-body input[data-plan-idx="${idx}"][data-plan-k="amount"]`);
+        if (cell) { cell.focus(); cell.scrollIntoView({ block: 'nearest' }); }
+        break;
+      }
+      case 'debt-plan-del': {
+        syncDebtInputs();
+        const f = state.debtForm;
+        if (!f || !Array.isArray(f.manualPlan)) break;
+        const delIdx = Math.max(0, Math.min(f.manualPlan.length - 1, Number(t.dataset.idx) || 0));
+        f.manualPlan.splice(delIdx, 1);
+        refreshPlanTable(); // 同样就地刷新，不重建弹窗
+        break;
+      }
+      case 'debt-plan-parse': {
+        syncDebtInputs();
+        const f = state.debtForm;
+        if (!f) break;
+        if (autoParsePlanText(true)) {
+          const det = document.getElementById('d-plan-paste');
+          if (det) det.open = false;
+          toast(`已解析 ${(f.manualPlan || []).length} 期计划，请核对利息校验后保存`);
+        } else {
+          toast('没有解析到有效行：每行需包含「日期 + 应还金额」，如 2026年11月5日 3665.36 含利息516.08', true);
+        }
+        break;
+      }
+      case 'debt-total-sync': {
+        // 按计划本金合计（各期应还 − 利息）回填欠款总金额：粘贴导入后总额对不上时一键修正
+        syncDebtInputs();
+        const f = state.debtForm;
+        if (!f || f.planSource !== 'manual') break;
+        const sum = round2((Array.isArray(f.manualPlan) ? f.manualPlan : [])
+          .filter((p) => p && p.date)
+          .reduce((s, p) => s + round2(Number(p.amount) || 0) - round2(Number(p.interest) || 0), 0));
+        if (!(sum > 0)) { toast('还没有可合计的期次', true); break; }
+        f.total = sum;
+        const te = document.getElementById('d-total');
+        if (te) te.value = String(sum);
+        refreshPlanTable();
+        toast(`欠款总金额已按计划本金合计填入 ${money(sum)}`);
+        break;
+      }
       case 'debt-delete': deleteDebt(t.dataset.id); break;
       case 'debt-expand': {
         const id = t.dataset.id;
@@ -2429,6 +2723,25 @@ function bindEvents() {
   document.addEventListener('change', (e) => {
     if (state.view === 'import' && impChange(e)) return;
     const id = e.target.id;
+    // 计划表格单元格：直接回写表单状态并刷新校验（不重建表单，保持输入焦点）
+    if (state.debtForm && e.target.dataset && e.target.dataset.planIdx != null) {
+      const p = (state.debtForm.manualPlan || [])[Number(e.target.dataset.planIdx)];
+      if (p) { p[e.target.dataset.planK] = e.target.value; updateDebtPreview(); }
+      return;
+    }
+    // 计划来源切换：自动计算 ↔ 平台账单，字段不同需重建表单
+    if (state.debtForm && id === 'd-plan-src') {
+      syncDebtInputs();
+      state.debtForm.planSource = e.target.value === 'manual' ? 'manual' : 'calc';
+      if (state.debtForm.planSource === 'manual' && !(Array.isArray(state.debtForm.manualPlan) && state.debtForm.manualPlan.length)) {
+        state.debtForm.manualPlan = [{ date: state.debtForm.firstDue || todayStr(), amount: '', interest: '' }];
+        state.debtForm.parsedText = ''; // 新建的是空占位期次，粘贴框文本尚未应用
+      }
+      renderDebtForm();
+      // 粘贴框里已有账单文本（切换前后保留）则直接解析填入，不必再手填
+      if (state.debtForm.planSource === 'manual') autoParsePlanText(false);
+      return;
+    }
     // 还款方式下拉：切换后需重建表单（最低还款/等额/先息后本的字段不同）
     if (state.debtForm && id === 'd-kind') {
       syncDebtInputs();
@@ -2444,6 +2757,8 @@ function bindEvents() {
       const fe = $('#d-first');
       if (fe) fe.value = autoFirst;
     }
+    // 粘贴框失焦：内容有变化就解析填入（保存前也由 syncDebtInputs 同步到 state）
+    if (state.debtForm && id === 'd-plan-text') { autoParsePlanText(false); return; }
     if (id === 'f-month') { state.txMonth = e.target.value; render(); }
     else if (id === 'f-type') { state.fType = e.target.value; state.fCat = 'all'; render(); }
     else if (id === 'f-cat') { state.fCat = e.target.value; render(); }
@@ -2460,7 +2775,19 @@ function bindEvents() {
 
   document.addEventListener('input', (e) => {
     if (e.target.id === 'f-q') { state.fQ = e.target.value; renderTxList(); }
+    if (state.debtForm && e.target.dataset && e.target.dataset.planIdx != null) {
+      const p = (state.debtForm.manualPlan || [])[Number(e.target.dataset.planIdx)];
+      if (p) { p[e.target.dataset.planK] = e.target.value; updateDebtPreview(); }
+      return;
+    }
+    // 粘贴账单文本：边粘贴/边输入边解析，自动填入计划表（无需手动点按钮）
+    if (state.debtForm && e.target.id === 'd-plan-text') { autoParsePlanText(false); return; }
     if (state.debtForm && String(e.target.id || '').startsWith('d-')) updateDebtPreview();
+  });
+
+  // 兜底：确保右键粘贴/拖拽粘贴后也自动解析一次（已解析过则直接跳过）
+  document.addEventListener('paste', (e) => {
+    if (state.debtForm && e.target && e.target.id === 'd-plan-text') setTimeout(() => autoParsePlanText(false), 0);
   });
 
   // 导入账单页：拖拽解析文件（必须 preventDefault，否则 Electron 会导航到文件）
